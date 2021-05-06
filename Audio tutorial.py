@@ -321,6 +321,13 @@ val_ds = val_ds.cache().prefetch(AUTOTUNE)
 # For the `Normalization` layer, its `adapt` method would first need to be called on the training data in order to compute aggregate statistics (i.e. mean and standard deviation).
 
 # %%
+def ReshapeLayer(x):
+    
+    shape = x.shape
+    reshape = layers.Reshape((shape[1],shape[2]*shape[3]))(x)
+
+    return reshape
+
 for spectrogram, _ in spectrogram_ds.take(1):
   input_shape = spectrogram.shape
 print('Input shape:', input_shape)
@@ -337,10 +344,11 @@ model = models.Sequential([
     layers.Conv2D(64, 3, activation='relu'),
     layers.MaxPooling2D(),
     layers.Dropout(0.25),
-    layers.Flatten(),
-    layers.Dense(128, activation='relu'),
+    layers.Lambda(ReshapeLayer),
+    layers.LSTM(256),
+    layers.Dense(256, activation='relu'),
     layers.Dropout(0.5),
-    layers.Dense(num_labels),
+    layers.Dense(num_labels, activation='softmax'),
 ])
 
 model.summary()
@@ -355,7 +363,7 @@ model.compile(
 
 
 # %%
-EPOCHS = 10
+EPOCHS = 20
 history = model.fit(
     train_ds, 
     validation_data=val_ds,  
