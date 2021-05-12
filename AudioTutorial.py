@@ -205,6 +205,7 @@ def get_spectrogram(waveform):
   spectrogram = tf.signal.stft(
       equal_length, frame_length=255, frame_step=128)
       
+  spectrogram = tf.math.pow(spectrogram, 0.2)
   spectrogram = tf.abs(spectrogram)
 
   return spectrogram
@@ -448,3 +449,88 @@ for spectrogram, label in sample_ds.batch(1):
 # * TensorFlow also has additional support for [audio data preparation and augmentation](https://www.tensorflow.org/io/tutorials/audio) to help with your own audio-based projects.
 # 
 
+
+#%%
+# Detect user input and classify it using the network
+
+#%%
+import speech_recognition as sr
+from playsound import playsound
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import numpy as np
+
+#%%
+
+r = sr.Recognizer() 
+notFound = 1
+while(notFound):    
+      
+    # Exception handling to handle
+    # exceptions at the runtime
+    try:
+          
+        # use the microphone as source for input.
+        with sr.Microphone(sample_rate=16000) as source2:
+              
+            # wait for a second to let the recognizer
+            # adjust the energy threshold based on
+            # the surrounding noise level 
+            r.adjust_for_ambient_noise(source2, duration=.5)
+            
+              
+            #listens for the user's input 
+            audio2 = r.listen(source2, phrase_time_limit=1)
+            wav = audio2.get_segment(start_ms=200, end_ms=1200).get_wav_data()
+            notFound = 0
+              
+    except sr.RequestError as e:
+        print("Could not request results; {0}".format(e))
+          
+    except sr.UnknownValueError:
+        print("unknown error occured")
+
+
+#%%
+
+def scaleWave2(wave):
+  length = len(wave)
+  targetSize = 16000
+  toRemove = length - targetSize
+  value = 0
+  vecs = tf.unstack(wave, axis=0)
+  del vecs[:toRemove]
+  return tf.stack(vecs, axis=0)
+  
+    
+
+#%%
+  
+    
+
+wave = decode_audio(wav)
+spectro = get_spectrogram(wave)
+
+#fig, axes = plt.subplots(2, figsize=(12, 8))
+#timescale = np.arange(wave.shape[0])
+#axes[0].plot(timescale, wave.numpy())
+#axes[0].set_title('Waveform')
+#axes[0].set_xlim([0, 16000])
+#plot_spectrogram(spectro.numpy(), axes[1])
+#axes[1].set_title('Spectrogram')
+#plt.show()
+#spectro = tf.expand_dims(tf.expand_dims(spectro,-1), 0)
+
+
+# %%
+prediction = model(spectro)
+print(commands[tf.math.argmax(prediction[0])])
+# %%
+
+# %%
+wave = decode_audio(wav)
+print(np.max(wave))
+plt.figure(2)
+timescale = np.arange(wave1.shape[0])
+plt.plot(timescale, wave1)
+# %%
