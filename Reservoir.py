@@ -139,17 +139,17 @@ spectrogram_ds = waveform_ds.map(get_spectrogram_and_label_id, num_parallel_call
 T = []
 V = []
 
-reservoir_size = 512
+reservoir_size = 600
 reservoir_density = 0.2
 reservoir_weights = sparse.random(reservoir_size, reservoir_size, reservoir_density, data_rvs=lambda shape : -1 + 2*np.random.rand(shape))
 eigenvals = np.linalg.eigvals(reservoir_weights.toarray())
-reservoir_weights = reservoir_weights/(np.real(max(eigenvals))*1.01)
+reservoir_weights = 2*reservoir_weights/(np.real(max(eigenvals)))
 print(max(np.linalg.eigvals(reservoir_weights.toarray())))
 
-input_weights = -1 + 2*np.random.rand(reservoir_size, 129)
+input_weights = -0.1 + 0.2*np.random.rand(reservoir_size, 129)
 
 
-for i, (spectrogram, label_id) in enumerate(spectrogram_ds.take(2000)):
+for i, (spectrogram, label_id) in enumerate(spectrogram_ds.take(500)):
     t = np.zeros((8,1), dtype=np.float64)
     t[label_id, :] = 1
     T.append(t) 
@@ -158,7 +158,9 @@ for i, (spectrogram, label_id) in enumerate(spectrogram_ds.take(2000)):
     for x in spectrogram:
         reservoir_state = np.tanh(input_weights.dot(x) + reservoir_weights.dot(reservoir_state))
     V.append(reservoir_state)
-    
+    if i%500==0:
+        print(i)
+
 T = tf.concat(T, axis=-1)
 V = tf.concat(V, axis=-1)
 
@@ -174,7 +176,7 @@ T = []
 V = []
 
 correct = 0
-for spectrogram, label_id in spectrogram_ds.take(500):
+for spectrogram, label_id in spectrogram_ds:
 
     reservoir_state = np.zeros([reservoir_size, 1])
     for x in spectrogram:
@@ -185,8 +187,7 @@ for spectrogram, label_id in spectrogram_ds.take(500):
     if (label_id == res):
         correct += 1
 
-correct/500
-#len(spectrogram_ds)
+correct/len(spectrogram_ds)
 
 # %% Reservoir save all states
 import scipy.sparse as sparse
@@ -205,14 +206,14 @@ reservoir_size = 512
 reservoir_density = 0.2
 reservoir_weights = sparse.random(reservoir_size, reservoir_size, reservoir_density, data_rvs=lambda shape : -1 + 2*np.random.rand(shape))
 eigenvals = np.linalg.eigvals(reservoir_weights.toarray())
-reservoir_weights = reservoir_weights/(np.real(max(eigenvals))*1.01)
+reservoir_weights = 2*reservoir_weights/(np.real(max(eigenvals)))
 print(max(np.linalg.eigvals(reservoir_weights.toarray())))
 reservoir_weights=reservoir_weights.toarray()
 
-input_weights = -1 + 2*np.random.rand(reservoir_size, 129)
+input_weights = -0.1 + 0.2*np.random.rand(reservoir_size, 129)
 
 
-for j, (spectrogram, label_id) in enumerate(spectrogram_ds.take(10)):
+for j, (spectrogram, label_id) in enumerate(spectrogram_ds):
     t = np.zeros((247,8,1), dtype=np.float64)
     t[:,label_id, :] = 1
     T.append(t) 
@@ -241,16 +242,16 @@ T = []
 V = []
 
 correct = 0
-for spectrogram, label_id in spectrogram_ds.take(500):
+for spectrogram, label_id in spectrogram_ds:
 
-    reservoir_state = np.zeros([reservoir_size, 1])
-    for x in spectrogram:
-        reservoir_state = np.tanh(input_weights.dot(x) + reservoir_weights.dot(reservoir_state))
-
-    res = W @ reservoir_state
-    res = tf.argmax(res)
+    reservoir_state = np.zeros([reservoir_size, 248, 1])
+    for i, x in enumerate(spectrogram):
+        reservoir_state[:,i+1,:] = np.tanh(input_weights.dot(x) + reservoir_weights.dot(reservoir_state[:,i]))
+    
+    reservoir_state = tf.transpose(reservoir_state, (1,0,2))
+    res = W @ reservoir_state[1:,:,:]
+    res = tf.argmax(tf.reduce_mean(res, axis=0))
     if (label_id == res):
         correct += 1
 
-correct/500
-#len(spectrogram_ds)
+correct/len(spectrogram_ds)
