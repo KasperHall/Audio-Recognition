@@ -54,11 +54,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import tensorflow as tf
+import speech_recognition as sr
+import time
 
 from tensorflow.keras.layers.experimental import preprocessing
 from tensorflow.keras import layers
 from tensorflow.keras import models
 from IPython import display
+from tensorflow.python.data.util.nest import flatten_up_to
 
 
 # Set seed for experiment reproducibility
@@ -86,15 +89,20 @@ if not data_dir.exists():
 # Check basic statistics about the dataset.
 
 # %%
-commands = np.array(tf.io.gfile.listdir(str(data_dir)))
-commands = commands[commands != 'README.md']
-print('Commands:', commands)
+#commands = np.array(tf.io.gfile.listdir(str(data_dir)))
+#commands = commands[commands != 'README.md']
+#print('Commands:', commands)
+commands = ['down', 'left', 'right', 'up']
 
 # %% [markdown]
 # Extract the audio files into a list and shuffle it.
 
 # %%
-filenames = tf.io.gfile.glob(str(data_dir) + '/*/*')
+fDown = tf.io.gfile.glob(str(data_dir) + '/down/*')
+fUp = tf.io.gfile.glob(str(data_dir) + '/up/*')
+fRight = tf.io.gfile.glob(str(data_dir) + '/right/*')
+fLeft = tf.io.gfile.glob(str(data_dir) + '/left/*')
+filenames = tf.concat([fDown,fUp,fRight,fLeft], axis=0)
 filenames = tf.random.shuffle(filenames)
 num_samples = len(filenames)
 print('Number of total examples:', num_samples)
@@ -106,9 +114,13 @@ print('Example file tensor:', filenames[0])
 # Split the files into training, validation and test sets using a 80:10:10 ratio, respectively.
 
 # %%
-train_files = filenames[:6400]
-val_files = filenames[6400: 6400 + 800]
-test_files = filenames[-800:]
+number_samples = len(filenames)
+i1 = int(number_samples*0.8)
+i2 = int(number_samples*0.8 + number_samples*0.1)
+i3 = int(number_samples*0.1)
+train_files = filenames[:i1]
+val_files = filenames[i1: i2]
+test_files = filenames[-i3:]
 
 print('Training set size', len(train_files))
 print('Validation set size', len(val_files))
@@ -163,7 +175,7 @@ waveform_ds = files_ds.map(get_waveform_and_label, num_parallel_calls=AUTOTUNE)
 # %% [markdown]
 # Let's examine a few audio waveforms with their corresponding labels.
 
-# %%
+# %% 
 rows = 3
 cols = 3
 n = rows*cols
@@ -453,14 +465,10 @@ for spectrogram, label in sample_ds.batch(1):
 #%%
 # Detect user input and classify it using the network
 
-#%%
-import speech_recognition as sr
-from playsound import playsound
-import matplotlib.pyplot as plt
-import tensorflow as tf
-import numpy as np
+#%% 
 
-#%%
+#Without listening in the background, take a user input and classify it
+
 
 r = sr.Recognizer() 
 notFound = 1
@@ -476,7 +484,7 @@ while(notFound):
             # wait for a second to let the recognizer
             # adjust the energy threshold based on
             # the surrounding noise level 
-            r.adjust_for_ambient_noise(source2, duration=.5)
+            r.adjust_for_ambient_noise(source2, duration=.1)
             
               
             #listens for the user's input 
@@ -489,48 +497,50 @@ while(notFound):
           
     except sr.UnknownValueError:
         print("unknown error occured")
-
-
-#%%
-
-def scaleWave2(wave):
-  length = len(wave)
-  targetSize = 16000
-  toRemove = length - targetSize
-  value = 0
-  vecs = tf.unstack(wave, axis=0)
-  del vecs[:toRemove]
-  return tf.stack(vecs, axis=0)
   
-    
-
-#%%
-  
-    
-
 wave = decode_audio(wav)
 spectro = get_spectrogram(wave)
-
-#fig, axes = plt.subplots(2, figsize=(12, 8))
-#timescale = np.arange(wave.shape[0])
-#axes[0].plot(timescale, wave.numpy())
-#axes[0].set_title('Waveform')
-#axes[0].set_xlim([0, 16000])
-#plot_spectrogram(spectro.numpy(), axes[1])
-#axes[1].set_title('Spectrogram')
-#plt.show()
-#spectro = tf.expand_dims(tf.expand_dims(spectro,-1), 0)
-
-
-# %%
+spectro = tf.expand_dims(tf.expand_dims(spectro,-1), 0)
 prediction = model(spectro)
 print(commands[tf.math.argmax(prediction[0])])
-# %%
 
-# %%
-wave = decode_audio(wav)
-print(np.max(wave))
-plt.figure(2)
-timescale = np.arange(wave1.shape[0])
-plt.plot(timescale, wave1)
+#%%
+
+# By listening in the background, take a user input and classify it
+def callback(recognizer, audio):
+    try:
+      #Classify the input
+      wav = audio.get_segment(start_ms=200, end_ms=1200).get_wav_data()
+      wave = decode_audio(wav)
+      spectro = get_spectrogram(wave)
+      spectro = tf.expand_dims(tf.expand_dims(spectro,-1), 0)
+      prediction = model(spectro)
+      print(commands[tf.math.argmax(prediction[0])])
+      # TODO: Code for connecting the input to the game
+    except sr.UnknownValueError:
+        print("Try again")
+    except sr.RequestError as e:
+        print("Restart run")
+
+r = sr.Recognizer()
+m = sr.Microphone(sample_rate=16000)
+with m as source:
+  # we only need to calibrate once, before we start listening
+  r.adjust_for_ambient_noise(source, duration=0.1)  
+
+# start listening in the background (note that we don't have to do this inside a `with` statement)
+stop_listening = r.listen_in_background(m, callback)
+
+# do some unrelated computations for 5 seconds
+
+for _ in range(30):
+  time.sleep(0.1)  # we're still listening even though the main thread is doing other things
+
+stop_listening(wait_for_stop=False)
+
+
+# do some more unrelated things
+while True: time.sleep(0.1)  # we're not listening anymore, even though the background thread might still be running for a second or two while cleaning up and stopping
+
+
 # %%
