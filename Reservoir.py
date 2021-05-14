@@ -32,7 +32,7 @@ num_samples = len(filenames)
 print('Number of total examples:', num_samples)
 print('Example file tensor:', filenames[0])
 
-train_files = filenames[:6400]
+train_files = filenames[:500]
 val_files = filenames[6400: 6400 + 800]
 test_files = filenames[-800:]
 
@@ -65,7 +65,7 @@ def get_spectrogram(waveform):
   waveform = tf.cast(waveform, tf.float32)
   equal_length = tf.concat([waveform, zero_padding], 0)
 
-  spectrogram = tf.signal.stft(equal_length, frame_length=250, frame_step=64)
+  spectrogram = tf.signal.stft(equal_length, frame_length=512, frame_step=264, fft_length=32)
   spectrogram = tf.math.abs(spectrogram)
   
   spectrogram = tf.math.pow(spectrogram, 0.2)
@@ -82,9 +82,49 @@ def get_spectrogram_and_label_id(audio, label):
     label_id = tf.argmax(label == commands)
     return spectrogram, label_id
 
+# %%
+
+
+# %% Correct ridge_regression
+AUTOTUNE = tf.data.AUTOTUNE
+files_ds = tf.data.Dataset.from_tensor_slices(train_files)
+waveform_ds = files_ds.map(get_waveform_and_label, num_parallel_calls=AUTOTUNE)
+spectrogram_ds = waveform_ds.map(get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
+
+
+n_samples= 6400
+design_matrix = np.zeros((n_samples, 59*17))
+target_output = np.zeros((n_samples, 8))
+for i, (spectrogram, label_id) in enumerate(spectrogram_ds):
+    spectrogram = np.array(spectrogram)
+    spectrogram = spectrogram.flatten()
+    design_matrix[i, :] = spectrogram
+
+    target_output[i, label_id] = 1
+
+output_weights = np.linalg.inv(design_matrix.T @ design_matrix + np.eye(59*17)) @ design_matrix.T @ target_output[:,:]
+print(output_weights.shape)
+
+# %%
+AUTOTUNE = tf.data.AUTOTUNE
+files_ds = tf.data.Dataset.from_tensor_slices(test_files)
+waveform_ds = files_ds.map(get_waveform_and_label, num_parallel_calls=AUTOTUNE)
+spectrogram_ds = waveform_ds.map(get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
+
+correct = 0
+for i, (spectrogram, label_id) in enumerate(spectrogram_ds):
+    
+    spectrogram = np.array(spectrogram)
+    spectrogram = spectrogram.flatten()
+    result = np.argmax(spectrogram @ output_weights)
+    
+    if label_id==result:
+        correct += 1
+
+print(correct/len(spectrogram_ds))
+
 
 # %% build training tensors
-
 AUTOTUNE = tf.data.AUTOTUNE
 files_ds = tf.data.Dataset.from_tensor_slices(train_files)
 waveform_ds = files_ds.map(get_waveform_and_label, num_parallel_calls=AUTOTUNE)
@@ -94,7 +134,7 @@ spectrogram_ds = waveform_ds.map(get_spectrogram_and_label_id, num_parallel_call
 # V: batch*250*64
 T = []
 V = []
-for spectrogram, label_id in spectrogram_ds.take(10):
+for spectrogram, label_id in spectrogram_ds:
     t = np.zeros((247, 8, 1), dtype=np.float32)
     t[:, label_id, :] = 1
     T.append(t) 
@@ -102,12 +142,14 @@ for spectrogram, label_id in spectrogram_ds.take(10):
 
 T = tf.concat(T, axis=-1)
 V = tf.concat(V, axis=-1)
+T = tf.transpose(T, (0,1,0))
+V = tf.transpose(V, (0,1,0))
 
 print(tf.shape(V))
 W = T @ tf.linalg.pinv(V)
-# %% Test
 
-files_ds = tf.data.Dataset.from_tensor_slices(val_files)
+# %% Test
+files_ds = tf.data.Dataset.from_tensor_slices(test_files)
 waveform_ds = files_ds.map(get_waveform_and_label, num_parallel_calls=AUTOTUNE)
 spectrogram_ds = waveform_ds.map(get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
 
@@ -118,6 +160,7 @@ V = []
 
 correct = 0
 for spectrogram, label_id in spectrogram_ds:
+    spectrogram = tf.transpose(spectrogram())
     res = W @ spectrogram
     res = tf.argmax(tf.math.reduce_mean(res, axis=0))
     if (label_id == res):
@@ -213,7 +256,7 @@ reservoir_weights=reservoir_weights.toarray()
 input_weights = -0.1 + 0.2*np.random.rand(reservoir_size, 129)
 
 
-for j, (spectrogram, label_id) in enumerate(spectrogram_ds):
+for j, (spectrogram, label_id) in enumerate(spectrogram_ds.take(3000)):
     t = np.zeros((247,8,1), dtype=np.float64)
     t[:,label_id, :] = 1
     T.append(t) 
@@ -221,7 +264,8 @@ for j, (spectrogram, label_id) in enumerate(spectrogram_ds):
     reservoir_state = np.zeros([reservoir_size, 248, 1])
     for i, x in enumerate(spectrogram):
         reservoir_state[:,i+1,:] = np.tanh(input_weights.dot(x) + reservoir_weights.dot(reservoir_state[:,i]))
-    
+    if j%100==0:
+        print(j)
     V.append(reservoir_state[:,1:,:])
 
     
