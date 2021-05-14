@@ -215,7 +215,7 @@ def get_spectrogram(waveform):
   waveform = tf.cast(waveform, tf.float32)
   equal_length = tf.concat([waveform, zero_padding], 0)
   spectrogram = tf.signal.stft(
-      equal_length, frame_length=255, frame_step=128)
+      equal_length, frame_length=200, frame_step=400, fft_length=256)
       
   spectrogram = tf.math.pow(spectrogram, 0.2)
   spectrogram = tf.abs(spectrogram)
