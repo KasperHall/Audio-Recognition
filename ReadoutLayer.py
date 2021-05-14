@@ -5,11 +5,12 @@ class SingleReadoutLayer():
     Predicts the most likely output class from a vector of inputs through ridge regression
     """
     def __init__(self, n_classes: int, n_features: int) -> None:
-        self.output_weights = np.zeros((n_classes, n_features))
+        self.output_weights = np.zeros((n_features, n_classes))
         self.n_classes = n_classes
         self.n_features = n_features
 
     def predict(self, x):
+        x = x.numpy().flatten()
         return np.argmax(x @ self.output_weights)
 
     def test(self, test_set):
@@ -28,10 +29,10 @@ class SingleReadoutLayer():
         target_output = np.zeros((n_samples, self.n_classes))
 
         for i, (x, target) in enumerate(training_set):
-            design_matrix[i, :] = x.flatten()
+            design_matrix[i, :] = x.numpy().flatten()
             target_output[i, target] = 1
 
-        self.output_weights[:, :] = np.linalg.inv(design_matrix.T @ design_matrix + np.eye(n_steps*n_freq)) @ design_matrix.T @ target_output
+        self.output_weights[:, :] = np.linalg.inv(design_matrix.T @ design_matrix + 0.1*np.eye(n_steps*n_freq)) @ design_matrix.T @ target_output
 
 class MultiReadoutLayer():
     """
