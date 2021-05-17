@@ -1,3 +1,4 @@
+# %% Imports
 import os
 import pathlib
 
@@ -5,12 +6,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import tensorflow as tf
+import scipy.sparse as sparse 
 
 from tensorflow.keras.layers.experimental import preprocessing
 from tensorflow.keras import layers
 from tensorflow.keras import models
 from IPython import display
 
+#%% DataLoader
 class DataLoader():
     def __init__(self) -> None:
         data_dir = pathlib.Path('data/mini_speech_commands')
@@ -52,6 +55,7 @@ class DataLoader():
         waveform_ds = files_ds.map(self.get_waveform_and_label, num_parallel_calls=AUTOTUNE)
         self.test_set = waveform_ds.map(self.get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
 
+
     @staticmethod
     def decode_audio(audio_binary):
         audio, _ = tf.audio.decode_wav(audio_binary)
@@ -78,10 +82,7 @@ class DataLoader():
         spectrogram = tf.math.abs(spectrogram)
         
         spectrogram = tf.math.pow(spectrogram, 0.2)
-        real = tf.math.sqrt(tf.math.abs(tf.math.real(spectrogram)))
-        imag = tf.math.sqrt(tf.math.abs(tf.math.imag(spectrogram))) 
-        spectrogram = tf.math.abs(tf.math.sin(real)) - tf.math.abs(tf.math.cos(imag))
-        spectrogram = spectrogram / tf.reduce_max(spectrogram) 
+
         return spectrogram
 
     def get_spectrogram_and_label_id(self, audio, label):
@@ -115,3 +116,81 @@ class DataLoader():
         ax.pcolormesh(X, Y, log_spec)
 
 
+
+
+
+#%% SingleReadoutLayer
+class SingleReadoutLayer():
+    """
+    Predicts the most likely output class from a vector of inputs through ridge regression
+    """
+    def __init__(self, n_classes: int, n_features: int) -> None:
+        self.output_weights = np.zeros((n_features, n_classes))
+        self.n_classes = n_classes
+        self.n_features = n_features
+
+    def predict(self, x):
+        x = x.numpy().flatten()
+        return np.argmax(x @ self.output_weights)
+
+    def test(self, test_set):
+        correct = 0
+        for x, target in test_set:
+            if self.predict(x) == target:
+                correct += 1
+                
+        return correct/len(test_set)
+
+    def train(self, training_set, n_steps, n_freq):
+        n_samples = len(training_set)
+        
+        design_matrix = np.zeros((n_samples, n_steps*n_freq))
+        target_output = np.zeros((n_samples, self.n_classes))
+
+        for i, (x, target) in enumerate(training_set):
+            design_matrix[i, :] = x.numpy().flatten()
+            target_output[i, target] = 1
+
+        self.output_weights[:, :] = np.linalg.inv(design_matrix.T @ design_matrix + 0.1*np.eye(n_steps*n_freq)) @ design_matrix.T @ target_output
+
+#%% MultiReadoutLayer
+class MultiReadoutLayer():
+    """
+    Predicts the most likely output class from a series of vectors through ridge regression
+    """
+
+    def __init__(self, n_classes: int, n_steps: int, n_features: int) -> None:
+        self.readout_layer = SingleReadoutLayer(n_classes, n_features)
+        self.n_classes = n_classes
+        self.n_features = n_features
+        self.n_steps = n_steps
+
+    def predict(self, x):
+        result = np.array([x_t.numpy().T @ self.readout_layer.output_weights for x_t in x])
+        return np.argmax(np.mean(result, 0))
+    
+    def test(self, test_set):
+        correct = 0
+        for x, target in test_set:
+            if self.predict(x) == target:
+                correct += 1
+        
+        return correct/len(test_set)
+    
+    def train(self, training_set, n_steps, n_freq):
+        new_training_set = []
+        for t in range(self.n_steps):
+            new_training_set.extend([(x[t], label_id) for x, label_id in training_set])
+            
+        self.readout_layer.train(new_training_set, 1, self.n_features)
+
+
+#%% Run experiments here
+
+data = DataLoader()
+data.visualize()
+
+#%%
+layer = MultiReadoutLayer(8, 124, 129)
+layer.train(data.train_set.take(2000), 124, 129) 
+layer.test(data.test_set)

@@ -1,3 +1,4 @@
+# %% Imports
 import os
 import pathlib
 
@@ -5,14 +6,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import tensorflow as tf
+import scipy.sparse as sparse 
 
 from tensorflow.keras.layers.experimental import preprocessing
 from tensorflow.keras import layers
 from tensorflow.keras import models
 from IPython import display
 
+#%% DataLoader
 class DataLoader():
+
+    resize = preprocessing.Resizing(32, 32)
+    norm = preprocessing.Normalization()
     def __init__(self) -> None:
+    
         data_dir = pathlib.Path('data/mini_speech_commands')
         if not data_dir.exists():
             tf.keras.utils.get_file(
@@ -52,6 +59,7 @@ class DataLoader():
         waveform_ds = files_ds.map(self.get_waveform_and_label, num_parallel_calls=AUTOTUNE)
         self.test_set = waveform_ds.map(self.get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
 
+
     @staticmethod
     def decode_audio(audio_binary):
         audio, _ = tf.audio.decode_wav(audio_binary)
@@ -69,8 +77,8 @@ class DataLoader():
         waveform = DataLoader.decode_audio(audio_binary)
         return waveform, label
 
-    @staticmethod
-    def get_spectrogram(waveform):
+    @classmethod
+    def get_spectrogram(cls, waveform):
         zero_padding = tf.zeros([16000] - tf.shape(waveform), dtype=tf.float32)
         equal_length = tf.concat([waveform, zero_padding], 0)
 
@@ -78,11 +86,12 @@ class DataLoader():
         spectrogram = tf.math.abs(spectrogram)
         
         spectrogram = tf.math.pow(spectrogram, 0.2)
-        real = tf.math.sqrt(tf.math.abs(tf.math.real(spectrogram)))
-        imag = tf.math.sqrt(tf.math.abs(tf.math.imag(spectrogram))) 
-        spectrogram = tf.math.abs(tf.math.sin(real)) - tf.math.abs(tf.math.cos(imag))
-        spectrogram = spectrogram / tf.reduce_max(spectrogram) 
-        return spectrogram
+        spectrogram = tf.expand_dims(spectrogram, -1)
+
+        spectrogram = DataLoader.resize(spectrogram)
+        spectrogram = DataLoader.norm(spectrogram)
+
+        return spectrogram 
 
     def get_spectrogram_and_label_id(self, audio, label):
         spectrogram = DataLoader.get_spectrogram(audio)
@@ -115,3 +124,101 @@ class DataLoader():
         ax.pcolormesh(X, Y, log_spec)
 
 
+
+
+
+#%% SingleReadoutLayer
+
+
+class SingleReadoutLayer():
+    """
+    Predicts the most likely output class from a vector of inputs through ridge regression
+    """
+    def __init__(self, n_classes: int, n_features: int, ridge_parameter = 0.1) -> None:
+        self.output_weights = np.zeros((n_features, n_classes))
+        self.n_classes = n_classes
+        self.n_features = n_features
+        self.ridge_parameter = ridge_parameter
+
+
+
+    def predict(self, x):
+        x = x.numpy().flatten()
+        return np.argmax(x @ self.output_weights)
+
+    def test(self, test_set):
+        correct = 0
+        for x, target in test_set:
+            if self.predict(x) == target:
+                correct += 1
+                
+        return correct/len(test_set)
+
+    def train(self, training_set, n_steps, n_freq):
+
+        n_samples = len(training_set)
+        
+        design_matrix = np.zeros((n_samples, n_steps*n_freq))
+        target_output = np.zeros((n_samples, self.n_classes))
+
+        for i, (x, target) in enumerate(training_set):
+            design_matrix[i, :] = x.numpy().flatten()
+            target_output[i, target] = 1
+
+        self.output_weights[:, :] = np.linalg.inv(design_matrix.T @ design_matrix + self.ridge_parameter*np.eye(n_steps*n_freq)) @ design_matrix.T @ target_output
+
+#%% MultiReadoutLayer
+class MultiReadoutLayer():
+    """
+    Predicts the most likely output class from a series of vectors through ridge regression
+    """
+
+    def __init__(self, n_classes: int, n_steps: int, n_features: int, ridge_parameter = 0.1) -> None:
+        self.readout_layers = [SingleReadoutLayer(n_classes, n_features, ridge_parameter) for i in range(n_steps)]
+        self.n_classes = n_classes
+        self.n_features = n_features
+        self.n_steps = n_steps
+        self.ridge_parameter = ridge_parameter
+
+
+
+    def predict(self, x):
+        result = np.array([x_t.numpy().T @ l.output_weights for l, x_t in zip(self.readout_layers, x)])
+        return np.argmax(np.mean(result, 0))
+    
+    def test(self, test_set):
+        correct = 0
+        for x, target in test_set:
+            if self.predict(x) == target:
+                correct += 1
+                
+        return correct/len(test_set)
+    
+    def train(self, training_set, n_steps, n_freq):
+        for t, layer in enumerate(self.readout_layers):
+            sub_training_set = [(x[t], label_id) for x, label_id in training_set]
+            layer.train(sub_training_set, 1, self.n_features)
+            if t%10==1:
+                print(f"{t}/{self.n_steps} trained.")
+
+#%% Run experiments here
+data = DataLoader()
+#data.visualize()
+
+#%%
+layer = MultiReadoutLayer(8, 32, 32)
+layer.train(data.train_set, 32, 32) 
+layer.test(data.test_set)
+
+#%% Test training samples impact
+
+results = []
+for ridge_parameter in [0, 0.1, 0.5, 1, 2]:
+    layer = MultiReadoutLayer(8, , 129, ridge_parameter)
+    layer.train(data.train_set.take(1000), 124, 129) 
+    results.append(layer.test(data.test_set))
+
+#%%
+print(results)
+plt.plot([0, 0.1, 0.5, 1, 2], results)
+plt.show()

@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.sparse as sparse 
 
 class SingleReadoutLayer():
     """
@@ -45,7 +46,7 @@ class MultiReadoutLayer():
         self.n_features = n_features
         self.n_steps
 
-    def predict(self, x):
+    def __call__(self, x):
         result = np.array([x_t @ l.output_weights for l, x_t in zip(self.readout_layers, x)])
         return np.argmax(np.mean(result, 1))
     
@@ -63,3 +64,27 @@ class MultiReadoutLayer():
             l.train(training_set)
             print(f"{t}/{self.n_steps} trained.")
 
+class ReservoirLayer():
+    """
+    Simple Echo state network layer
+    """
+    def __init__(self, reservoir_size: int, input_dim: int) -> None:
+        self.reservoir_size = reservoir_size
+
+        self.input_weights = -0.1 + 0.2*np.random.rand(reservoir_size, input_dim)
+        self.reservoir_weights = sparse.random(reservoir_size, reservoir_size, density=0.01, data_rvs = lambda shape: -1 + 2*np.random.rand(shape))
+        self.reservoir_weights = self.reservoir_weights/(np.max(np.real(np.linalg.eigvals(self.reservoir_weights))))
+        self.reservoir_bias = -0.1 + 0.2*np.random.rand(reservoir_size, 1)
+
+    def __call__(self, x, return_all_states = False):
+        reservoir_state = np.zeros((self.reservoir_size, 1))
+        
+        reservoir_state = np.array([[]])
+        for x_t in x:
+            result= np.tanh(self.input_weights @ x_t + self.reservoir_weights @ reservoir_state + self.reservoir_bias)
+            if return_all_states:
+                reservoir_state = np.append(reservoir_state, result, axis=-1)
+            else:
+                reservoir_state = result
+    
+        return reservoir_state
