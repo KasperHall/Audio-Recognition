@@ -15,7 +15,11 @@ from IPython import display
 
 #%% DataLoader
 class DataLoader():
-    def __init__(self) -> None:
+
+    resize = preprocessing.Resizing(64, 64)
+    norm = preprocessing.Normalization()
+    def __init__(self, n_training = 6400, n_test=800) -> None:
+    
         data_dir = pathlib.Path('data/mini_speech_commands')
         if not data_dir.exists():
             tf.keras.utils.get_file(
@@ -26,7 +30,7 @@ class DataLoader():
 
         commands = np.array(tf.io.gfile.listdir(str(data_dir)))
         self.commands = commands[commands != 'README.md']
-        print('Commands:', commands)
+        print('Commands:', self.commands)
 
         filenames = tf.io.gfile.glob(str(data_dir) + '/*/*')
         filenames = tf.random.shuffle(filenames)
@@ -45,7 +49,7 @@ class DataLoader():
         AUTOTUNE = tf.data.AUTOTUNE
         files_ds = tf.data.Dataset.from_tensor_slices(train_files)
         waveform_ds = files_ds.map(self.get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        self.train_set = waveform_ds.map(self.get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
+        self.train_set = waveform_ds.map(self.get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE).take(n_training)
 
         files_ds = tf.data.Dataset.from_tensor_slices(val_files)
         waveform_ds = files_ds.map(self.get_waveform_and_label, num_parallel_calls=AUTOTUNE)
@@ -53,7 +57,7 @@ class DataLoader():
 
         files_ds = tf.data.Dataset.from_tensor_slices(test_files)
         waveform_ds = files_ds.map(self.get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        self.test_set = waveform_ds.map(self.get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE)
+        self.test_set = waveform_ds.map(self.get_spectrogram_and_label_id, num_parallel_calls=AUTOTUNE).take(n_test)
 
 
     @staticmethod
@@ -73,20 +77,21 @@ class DataLoader():
         waveform = DataLoader.decode_audio(audio_binary)
         return waveform, label
 
-    @staticmethod
-    def get_spectrogram(waveform):
+    @classmethod
+    def get_spectrogram(cls, waveform):
         zero_padding = tf.zeros([16000] - tf.shape(waveform), dtype=tf.float32)
         equal_length = tf.concat([waveform, zero_padding], 0)
 
-        spectrogram = tf.signal.stft(equal_length, frame_length=512, frame_step=264, fft_length=32)
+        spectrogram = tf.signal.stft(equal_length, frame_length=255, frame_step=128)
         spectrogram = tf.math.abs(spectrogram)
         
         spectrogram = tf.math.pow(spectrogram, 0.2)
-        real = tf.math.sqrt(tf.math.abs(tf.math.real(spectrogram)))
-        imag = tf.math.sqrt(tf.math.abs(tf.math.imag(spectrogram))) 
-        spectrogram = tf.math.abs(tf.math.sin(real)) - tf.math.abs(tf.math.cos(imag))
-        spectrogram = spectrogram / tf.reduce_max(spectrogram) 
-        return spectrogram
+        spectrogram = tf.expand_dims(spectrogram, -1)
+
+        #spectrogram = DataLoader.resize(spectrogram)
+        #spectrogram = DataLoader.norm(spectrogram)
+
+        return spectrogram 
 
     def get_spectrogram_and_label_id(self, audio, label):
         spectrogram = DataLoader.get_spectrogram(audio)
@@ -127,13 +132,15 @@ class SingleReadoutLayer():
     """
     Predicts the most likely output class from a vector of inputs through ridge regression
     """
-    def __init__(self, n_classes: int, n_features: int) -> None:
-        self.output_weights = np.zeros((n_features, n_classes))
+    def __init__(self, n_classes, ridge_parameter = 0.1) -> None:
         self.n_classes = n_classes
-        self.n_features = n_features
+        self.ridge_parameter = ridge_parameter
+
+        self.design_matrix = []
+        self.target_output = []
 
     def predict(self, x):
-        x = x.numpy().flatten()
+        x = x.flatten()
         return np.argmax(x @ self.output_weights)
 
     def test(self, test_set):
@@ -144,18 +151,27 @@ class SingleReadoutLayer():
                 
         return correct/len(test_set)
 
-    def train(self, training_set, n_steps, n_freq):
-
-        n_samples = len(training_set)
+    def add_sample(self, sample, target_id):
+        sample = sample.reshape((1, sample.size))
         
-        design_matrix = np.zeros((n_samples, n_steps*n_freq))
-        target_output = np.zeros((n_samples, self.n_classes))
+        target = np.zeros((1,self.n_classes))
+        target[0,target_id] = 1
 
-        for i, (x, target) in enumerate(training_set):
-            design_matrix[i, :] = x.numpy().flatten()
-            target_output[i, target] = 1
+        self.design_matrix.append(sample)
+        self.target_output.append(target)
 
-        self.output_weights[:, :] = np.linalg.inv(design_matrix.T @ design_matrix + 0.1*np.eye(n_steps*n_freq)) @ design_matrix.T @ target_output
+    def finalize_training(self):
+        self.design_matrix = np.concatenate(self.design_matrix, axis=0)
+        self.target_output = np.concatenate(self.target_output, axis=0)
+
+        size = len(self.design_matrix[0,:])
+        self.output_weights = np.linalg.inv(self.design_matrix.T @ self.design_matrix + self.ridge_parameter*np.eye(size)) @ self.design_matrix.T @ self.target_output
+
+    def train(self, data_set):
+        for sample, target in data_set:
+            self.add_sample(sample, target)
+            
+        self.finalize_training()
 
 #%% MultiReadoutLayer
 class MultiReadoutLayer():
@@ -163,62 +179,102 @@ class MultiReadoutLayer():
     Predicts the most likely output class from a series of vectors through ridge regression
     """
 
-    def __init__(self, n_classes: int, n_features: int, n_steps: int) -> None:
-        self.readout_layers = [SingleReadoutLayer(n_classes, n_features) for i in range(n_steps)]
+    def __init__(self, n_classes: int, n_steps: int,  ridge_parameter = 0.1) -> None:
+        self.readout_layers = [SingleReadoutLayer(n_classes, ridge_parameter) for i in range(n_steps)]
         self.n_classes = n_classes
-        self.n_features = n_features
-        self.n_steps
+        self.ridge_parameter = ridge_parameter
 
-    def __call__(self, x):
-        result = np.array([x_t @ l.output_weights for l, x_t in zip(self.readout_layers, x)])
-        return np.argmax(np.mean(result, 1))
+    def predict(self, x, plot=False):
+
+        result = np.array([x_t.T @ l.output_weights for l, x_t in zip(self.readout_layers, x)])
+
+        if plot:           
+            plt.figure(figsize=(16,16))
+            plt.imshow(result.T, cmap='hot', interpolation='nearest')
+            plt.show()
+        
+        return np.argmax(np.mean(result, 0))
     
-    def test(self, test_set):
+    def test(self, test_set, reservoir):
         correct = 0
-        for x, target in test_set:
+        for x, target in test_set.as_numpy_iterator():
+
+            if not reservoir is None:
+                x = reservoir.predict(x)
+
             if self.predict(x) == target:
                 correct += 1
                 
         return correct/len(test_set)
     
-    def train(self, training_set, n_steps, n_freq):
-        for t, l in enumerate(self.n_steps):
-            training_set = [(x[t], label_id) for x, label_id in training_set]
-            l.train(training_set)
-            print(f"{t}/{self.n_steps} trained.")
+    def train(self, training_set, reservoir = None):
+        for i, (x, y) in enumerate(training_set.as_numpy_iterator()):
 
-#%% ResevoirLayer
+            if not reservoir is None:
+                x = reservoir.predict(x)
+
+            for layer, x_t in zip(self.readout_layers, x):
+                layer.add_sample(x_t, y)            
+            if i%500==1:
+                print(f"{i}/{len(training_set)} samples completed.")
+
+        print("Inverting matrices...")
+        for i, layer in enumerate(self.readout_layers):
+            layer.finalize_training()
+            if i%10==1:
+                print(f"{i}/{len(self.readout_layers)} layers completed.")
+        
+        print("Training completed!")
+
+#%% Reservoir
 class ReservoirLayer():
     """
     Simple Echo state network layer
     """
-    def __init__(self, reservoir_size: int, input_dim: int) -> None:
-        self.reservoir_size = reservoir_size
+    def __init__(self, n_classes, input_dim: int, parameters: dict) -> None:
+        self.reservoir_size = parameters["reservoir_size"] 
+        self.backwards = parameters["backwards"]
 
-        self.input_weights = -0.1 + 0.2*np.random.rand(reservoir_size, input_dim)
-        self.reservoir_weights = sparse.random(reservoir_size, reservoir_size, density=0.01, data_rvs = lambda shape: -1 + 2*np.random.rand(shape))
-        self.reservoir_weights = self.reservoir_weights/(np.max(np.real(np.linalg.eigvals(self.reservoir_weights))))
-        self.reservoir_bias = -0.1 + 0.2*np.random.rand(reservoir_size, 1)
-
-    def __call__(self, x, return_all_states = False):
-        reservoir_state = np.zeros((self.reservoir_size, 1))
+        self.input_weights = parameters["input_scaling"]*(-1 + 2*np.random.rand(parameters["reservoir_size"], input_dim))
+        self.reservoir_bias = parameters["bias_scaling"]*(1 + 2*np.random.rand(parameters["reservoir_size"], 1))
         
-        reservoir_state = np.array([[]])
+        self.reservoir_weights = sparse.random(parameters["reservoir_size"], parameters["reservoir_size"], density=parameters["density"], data_rvs = lambda shape: -1 + 2*np.random.rand(shape))
+        self.reservoir_weights =  parameters["reservoir_scaling"]*(self.reservoir_weights/(np.max(np.real(np.linalg.eigvals(self.reservoir_weights.toarray())))))
+        
+        self.readout = MultiReadoutLayer(n_classes, parameters["reservoir_size"]) 
+
+    def predict(self, x):
+
+        reservoir_state = []
         for x_t in x:
-            result= np.tanh(self.input_weights @ x_t + self.reservoir_weights @ reservoir_state + self.reservoir_bias)
-            if return_all_states:
-                reservoir_state = np.append(reservoir_state, result, axis=-1)
+            x_t = x_t[:,:,0]
+            if len(reservoir_state)==0:
+                new_state = np.tanh(self.input_weights @ x_t + self.reservoir_bias)
+
             else:
-                reservoir_state = result
-    
-        return reservoir_state
+                new_state = np.tanh(self.input_weights @ x_t + self.reservoir_weights @ reservoir_state[-1][0] + self.reservoir_bias)
+            
+            new_state = np.expand_dims(new_state, 0)
+            reservoir_state.append(new_state)
+
+
+        return np.concatenate(reservoir_state, axis=0)
+
+
+
 
 #%% Run experiments here
+parameters = {"reservoir_size" : 500,
+              "density" : 0.01,
+              "input_scaling" : 2,
+              "reservoir_scaling" : 1,
+              "bias_scaling" : 1,
+              "backwards" : False}
 
-data = DataLoader()
-data.visualize()
+data = DataLoader(n_training=6400, n_test=800)
+res = ReservoirLayer(8, 129, parameters)
 
-#%%
-layer = SingleReadoutLayer(8, 59*17)
-layer.train(data.train_set, 59, 17)
-layer.test(data.test_set)
+layer = MultiReadoutLayer(8, 124)
+
+layer.train(data.train_set, res) 
+layer.test(data.test_set, res)
