@@ -1,4 +1,5 @@
 # %% Imports
+from ast import Mult
 import os
 import pathlib
 
@@ -88,8 +89,8 @@ class DataLoader():
         spectrogram = tf.math.pow(spectrogram, 0.2)
         spectrogram = tf.expand_dims(spectrogram, -1)
 
-        #spectrogram = DataLoader.resize(spectrogram)
-        #spectrogram = DataLoader.norm(spectrogram)
+        spectrogram = DataLoader.resize(spectrogram)
+        spectrogram = DataLoader.norm(spectrogram)
 
         return spectrogram 
 
@@ -184,9 +185,16 @@ class MultiReadoutLayer():
         self.n_classes = n_classes
         self.ridge_parameter = ridge_parameter
 
+    @classmethod
+    def from_layers(cls, readout_layers, n_classes, n_steps, ridge_parameter=0.1):
+        layer = MultiReadoutLayer(n_classes, n_steps=n_steps, ridge_parameter=ridge_parameter)
+        layer.readout_layers = readout_layers
+        return layer
+
     def predict(self, x, plot=False):
 
         result = np.array([x_t.T @ l.output_weights for l, x_t in zip(self.readout_layers, x)])
+        #result[result < np.median(result)] = 0
 
         if plot:           
             plt.figure(figsize=(16,16))
@@ -272,9 +280,13 @@ parameters = {"reservoir_size" : 500,
               "backwards" : False}
 
 data = DataLoader(n_training=6400, n_test=800)
-res = ReservoirLayer(8, 129, parameters)
+res = ReservoirLayer(8, 64, parameters)
 
-layer = MultiReadoutLayer(8, 124)
+layer = MultiReadoutLayer(8, 64)
 
 layer.train(data.train_set, res) 
+readout_layers = layer.readout_layers
+
+#%%
+layer = MultiReadoutLayer.from_layers(readout_layers, 8,64)
 layer.test(data.test_set, res)
