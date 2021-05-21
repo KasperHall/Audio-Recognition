@@ -90,8 +90,8 @@ class DataLoader():
         spectrogram = tf.math.pow(spectrogram, 0.2)
         spectrogram = tf.expand_dims(spectrogram, -1)
 
-        spectrogram = DataLoader.resize(spectrogram)
-        spectrogram = DataLoader.norm(spectrogram)
+        #spectrogram = DataLoader.resize(spectrogram)
+        #spectrogram = DataLoader.norm(spectrogram)
 
         return spectrogram 
 
@@ -288,28 +288,28 @@ class ReservoirLayer():
             result2 = np.concatenate(reservoir_state, axis=0) 
         
 
-            return (result1 + result2)/2
+            return np.concatenate((result1, result2), axis=1)
 
 
 
 
 #%% Run experiments here
-parameters = {"reservoir_size" : 500,
+parameters = {"reservoir_size" : 300,
               "density" : 0.01,
               "input_scaling" : 2,
-              "reservoir_scaling" : 1,
+              "reservoir_scaling" : 0.9,
               "bias_scaling" : 1,
-              "backwards" : True}
+              "backwards" : False}
 
 data = DataLoader(n_training=6400, n_test=800)
-res = ReservoirLayer(8, 32, parameters)
+res = ReservoirLayer(8, 129, parameters)
 
-layer = MultiReadoutLayer(8, 32)
+layer = MultiReadoutLayer(8, 124)
 
 layer.train(data.train_set, res) 
 readout_layers = layer.readout_layers
 layer.test(data.test_set, res)
 
 #%%
-layer = MultiReadoutLayer.from_layers(readout_layers, 8,32)
+layer = MultiReadoutLayer.from_layers(readout_layers, 8,124)
 layer.test(data.test_set, res)
