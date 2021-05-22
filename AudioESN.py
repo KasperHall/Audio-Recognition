@@ -209,7 +209,7 @@ def get_spectrogram(waveform):
   spectrogram = tf.signal.stft(
       equal_length, frame_length=200, frame_step=400, fft_length=256)
       
-  spectrogram = tf.math.pow(spectrogram, 0.2)
+  spectrogram = tf.math.pow(spectrogram, 0.7)
   spectrogram = tf.abs(spectrogram)
 
   return spectrogram
@@ -343,20 +343,21 @@ num_labels = len(commands)
 
 norm_layer = preprocessing.Normalization()
 norm_layer.adapt(spectrogram_ds.map(lambda x, _: x))
-bias_init = tf.keras.initializers.GlorotUniform()
+init = tf.keras.initializers.RandomUniform(minval=-1, maxval=1)
+init2 = tf.keras.initializers.RandomUniform(minval=-2, maxval=2)
 
 model = models.Sequential([
     layers.Input(shape=input_shape),
-    preprocessing.Resizing(32, 32), 
-    norm_layer,
+    #preprocessing.Resizing(32, 32), 
+    #norm_layer,
+    layers.Conv2D(16, 3, activation='relu'),
     #layers.Conv2D(32, 3, activation='relu'),
-    #layers.Conv2D(64, 3, activation='relu'),
     #layers.MaxPooling2D(),
-    #layers.Dropout(0.25),
     layers.Lambda(ReshapeLayer),
-    #tfa.layers.ESN(846, connectivity=0.05, return_sequences=True, spectral_radius=0.99, bias_initializer=bias_init),
-    layers.Dense(num_labels, activation='softmax'),
-    layers.GlobalAveragePooling1D()
+    #layers.LSTM(256, return_sequences=True),
+    layers.Dropout(0.25),
+    layers.GlobalAveragePooling1D(),
+    layers.Dense(num_labels, activation='softmax')
 ])
 
 model.summary()
@@ -371,7 +372,7 @@ model.compile(
 
 
 # %%
-EPOCHS = 20
+EPOCHS = 30
 history = model.fit(
     train_ds, 
     validation_data=val_ds,  
